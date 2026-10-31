@@ -27,6 +27,11 @@ final class RingBuffer: @unchecked Sendable {
         return w - r
     }
 
+    /// Total frames written so far. Advances only when the writer delivers.
+    var framesWritten: Int {
+        writeIndex.load(ordering: .acquiring)
+    }
+
     /// Writes interleaved frames. Drops the oldest data on overflow by
     /// advancing the read index (reader will just skip ahead).
     func write(_ samples: UnsafePointer<Float>, frameCount: Int) {
@@ -45,24 +50,6 @@ final class RingBuffer: @unchecked Sendable {
                 from: samples.advanced(by: firstFrames * channelCount),
                 count: (frameCount - firstFrames) * channelCount
             )
-        }
-        writeIndex.store(w + frameCount, ordering: .releasing)
-    }
-
-    /// Writes silence, used to preserve timeline gaps from the driver.
-    func writeSilence(frameCount: Int) {
-        guard frameCount > 0 else { return }
-        precondition(frameCount <= capacityFrames)
-
-        let w = writeIndex.load(ordering: .relaxed)
-        discardOldestFrames(frameCount, writeIndex: w)
-
-        let startSlot = w % capacityFrames
-        let firstFrames = min(frameCount, capacityFrames - startSlot)
-        storage.advanced(by: startSlot * channelCount)
-            .update(repeating: 0, count: firstFrames * channelCount)
-        if firstFrames < frameCount {
-            storage.update(repeating: 0, count: (frameCount - firstFrames) * channelCount)
         }
         writeIndex.store(w + frameCount, ordering: .releasing)
     }
@@ -87,6 +74,38 @@ final class RingBuffer: @unchecked Sendable {
             free = capacityFrames - (w - r)
             guard framesNeeded > free else { return }
         }
+    }
+
+    /// Moves the reader forward by up to frameCount, never past the writer,
+    /// retrying if the writer moved it concurrently. Returns frames advanced.
+    @discardableResult
+    private func advanceReader(by frameCount: Int, from start: Int) -> Int {
+        var current = start
+        while true {
+            let count = min(frameCount, writeIndex.load(ordering: .acquiring) - current)
+            guard count > 0 else { return 0 }
+            let result = readIndex.compareExchange(
+                expected: current,
+                desired: current + count,
+                successOrdering: .releasing,
+                failureOrdering: .acquiring
+            )
+            if result.exchanged { return count }
+            current = result.original
+        }
+    }
+
+    /// Discards up to frameCount of the oldest buffered frames from the
+    /// reader side. Safe while the writer runs; returns the frames dropped.
+    @discardableResult
+    func skip(frameCount: Int) -> Int {
+        guard frameCount > 0 else { return 0 }
+        return advanceReader(by: frameCount, from: readIndex.load(ordering: .acquiring))
+    }
+
+    /// Discards everything buffered. Safe while the writer runs.
+    func skipAll() {
+        skip(frameCount: capacityFrames)
     }
 
     /// Discards buffered frames. Only safe while neither side is running.
@@ -121,19 +140,7 @@ final class RingBuffer: @unchecked Sendable {
                 .update(repeating: 0, count: (frameCount - available) * channelCount)
         }
 
-        var current = r
-        while true {
-            let limit = writeIndex.load(ordering: .acquiring)
-            let desired = min(current + available, max(current, limit))
-            let result = readIndex.compareExchange(
-                expected: current,
-                desired: desired,
-                successOrdering: .releasing,
-                failureOrdering: .acquiring
-            )
-            if result.exchanged { break }
-            current = result.original
-        }
+        advanceReader(by: available, from: r)
         return available
     }
 }

@@ -146,11 +146,12 @@ final class SystemAudioController: @unchecked Sendable {
         if let expected = expectedSampleTime {
             if header.sampleTime > expected {
                 let gap = header.sampleTime - expected
+                // The renderer output fills gaps against its own clock, so
+                // gap audio is not written here.
                 if gap <= UInt64(CACOPHONY_SAMPLE_RATE) {
-                    ring.writeSilence(frameCount: Int(gap))
                     alog("packet timeline gap: \(gap) frames")
                 } else {
-                    ring.reset()
+                    ring.skipAll()
                     alog("packet timeline reset after \(gap) frames")
                 }
             } else if header.sampleTime < expected {
@@ -158,7 +159,7 @@ final class SystemAudioController: @unchecked Sendable {
                 if behind <= UInt64(CACOPHONY_SAMPLE_RATE) {
                     return false
                 }
-                ring.reset()
+                ring.skipAll()
                 alog("packet timeline reset after \(behind) frames")
             }
         }
@@ -285,9 +286,13 @@ final class SystemAudioController: @unchecked Sendable {
         if let output, now - lastStatsLog >= 10 {
             lastStatsLog = now
             let snapshot = receiveStats.snapshot()
-            alog("stats packets=\(snapshot.packets) frames=\(snapshot.frames) gaps=\(snapshot.gaps) peak=\(String(format: "%.3f", snapshot.peak)) ringEmpty=\(output.ringEmptyTicks.load(ordering: .relaxed)) enqueued=\(output.enqueuedFrames)")
+            let latency = output.latencySnapshot()
+            alog("stats packets=\(snapshot.packets) frames=\(snapshot.frames) gaps=\(snapshot.gaps) peak=\(String(format: "%.3f", snapshot.peak)) ringEmpty=\(output.ringEmptyTicks.load(ordering: .relaxed)) enqueued=\(output.enqueuedFrames) delay=\(String(format: "%.3f", latency.total))s (lead \(String(format: "%.3f", latency.lead)), ring \(String(format: "%.3f", latency.ring))) padded=\(output.paddedFrames.load(ordering: .relaxed)) dropped=\(output.droppedFrames.load(ordering: .relaxed)) corrections=\(output.corrections.load(ordering: .relaxed))")
         }
     }
+
+    /// Delay the renderer output holds, from the driver to the speakers.
+    private static let streamDelay = 0.5
 
     private func startOutput() {
         ring.reset()
@@ -295,7 +300,7 @@ final class SystemAudioController: @unchecked Sendable {
         expectedSampleTime = nil
         stateLock.unlock()
         do {
-            let output = RendererOutput(format: format, ring: ring)
+            let output = RendererOutput(format: format, ring: ring, targetDelay: Self.streamDelay)
             try output.start()
             if CACRendererSetOutputContext(output.renderer, context) {
                 lastError = nil
@@ -305,7 +310,7 @@ final class SystemAudioController: @unchecked Sendable {
             self.output = output
             lastEnqueuedFrames = 0
             lastEnqueuedProgressAt = ProcessInfo.processInfo.systemUptime
-            alog("Cacophony streaming to \(routedDeviceNames.joined(separator: " + "))")
+            alog("Cacophony streaming to \(routedDeviceNames.joined(separator: " + ")) holding \(String(format: "%.3f", output.targetDelay))s delay")
         } catch {
             lastError = "\(error)"
             alog("Cacophony renderer start failed: \(error)")
