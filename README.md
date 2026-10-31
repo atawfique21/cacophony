@@ -183,6 +183,7 @@ The protocol header lives in `Sources/CacophonyProtocol/include/CacophonyProtoco
 - Uses private `AVOutputContext` APIs and route-picker SPI; may break on future macOS releases.
 - AirPlay adds roughly two seconds of buffering, so it is not suitable for video or gaming.
 - Speaker selections cannot be restored programmatically; choose speakers again after restarting Cacophony. Keeping Cacophony running avoids this.
+- Adding a speaker while audio plays restarts the stream, with about four seconds of silence while the new speaker gets ready. Choosing all speakers before playing avoids it.
 - If Cacophony is the system output and the app is not running, audio is silent. Launch at Login is enabled by default; quit from the menu so the previous output is restored.
 - The driver installs into `/Library/Audio/Plug-Ins/HAL` and requires administrator approval. Installing or updating it restarts Core Audio.
 

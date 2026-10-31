@@ -72,6 +72,22 @@ final class SystemAudioController: @unchecked Sendable {
 
     var isStreaming: Bool { output != nil }
 
+    /// How long a newly added speaker needs before a stream starts on time.
+    /// Restarting right away added 3.1 s of delay, after 2 s it added 1.1 s,
+    /// after 3 s none (HomePod mini pair + AirPort Express).
+    private static let speakerWarmUp: TimeInterval = 3.5
+
+    /// Speakers the current stream started with.
+    private var streamDeviceIDs: Set<String> = []
+
+    private var routedDeviceIDs: Set<String> {
+        Set(CACContextOutputDevices(context).map {
+            (CACDeviceProperty($0, "deviceID") as? String)
+                ?? (CACDeviceProperty($0, "deviceName") as? String)
+                ?? ""
+        })
+    }
+
     var routedDeviceNames: [String] {
         CACContextOutputDevices(context).compactMap {
             CACDeviceProperty($0, "deviceName") as? String
@@ -272,6 +288,21 @@ final class SystemAudioController: @unchecked Sendable {
             return
         }
 
+        // When a speaker joins a running stream, AirPlay holds the whole group
+        // back until it is ready, and the delay stays that much longer for the
+        // rest of the stream without the renderer clock showing it. Stop, give
+        // the new speaker time to come up, and restart so every speaker starts
+        // together. Removing a speaker is fine.
+        if output != nil {
+            let devices = routedDeviceIDs
+            if devices.isSubset(of: streamDeviceIDs) {
+                streamDeviceIDs = devices
+            } else {
+                stopOutput(reason: "speaker added")
+                retryNotBefore = now + Self.speakerWarmUp
+            }
+        }
+
         if output == nil, audibleAge < 2, now >= retryNotBefore {
             startOutput()
             onChange?()
@@ -308,6 +339,7 @@ final class SystemAudioController: @unchecked Sendable {
                 lastError = "renderer setOutputContext: unavailable"
             }
             self.output = output
+            streamDeviceIDs = routedDeviceIDs
             lastEnqueuedFrames = 0
             lastEnqueuedProgressAt = ProcessInfo.processInfo.systemUptime
             alog("Cacophony streaming to \(routedDeviceNames.joined(separator: " + ")) holding \(String(format: "%.3f", output.targetDelay))s delay")
