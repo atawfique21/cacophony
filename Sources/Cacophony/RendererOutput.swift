@@ -32,6 +32,9 @@ struct LatencySnapshot {
 /// - Drift and jitter are corrected one 20 ms chunk at a time, dropping a
 ///   chunk or inserting silence where the audio is quiet.
 /// - Backlog after a long stall is dropped at once.
+///
+/// The driver reports the same delay to macOS, which is what lets players
+/// keep video in sync.
 final class RendererOutput {
     let renderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()

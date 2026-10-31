@@ -16,6 +16,16 @@ extern "C" {
 #define CACOPHONY_CHANNELS 2u
 #define CACOPHONY_PACKET_MAX_FRAMES 1024u
 
+/// Output latency the driver reports to macOS, in frames (500 ms). The app
+/// holds the AirPlay stream at this delay so players can sync video to it.
+/// Reported as stream latency: the AirPlay engine adds the default output's
+/// device latency to the speakers' delay, but ignores stream latency.
+#define CACOPHONY_OUTPUT_LATENCY_FRAMES 24000u
+
+/// Shortest delay AirPlay holds without rebuffering, in frames (250 ms).
+/// The app never holds less, so reporting less would put video ahead.
+#define CACOPHONY_MIN_LATENCY_FRAMES 12000u
+
 /// Float32, interleaved, native endian.
 #define CACOPHONY_FORMAT_FLOAT32_INTERLEAVED 0u
 
@@ -40,8 +50,10 @@ typedef struct CacophonyPacketHeader {
 
 #ifdef __cplusplus
 static_assert(sizeof(CacophonyPacketHeader) == 48, "unexpected packet header layout");
+static_assert(CACOPHONY_OUTPUT_LATENCY_FRAMES >= CACOPHONY_MIN_LATENCY_FRAMES, "reported latency below what AirPlay can hold");
 #else
 _Static_assert(sizeof(CacophonyPacketHeader) == 48, "unexpected packet header layout");
+_Static_assert(CACOPHONY_OUTPUT_LATENCY_FRAMES >= CACOPHONY_MIN_LATENCY_FRAMES, "reported latency below what AirPlay can hold");
 #endif
 
 #ifdef __cplusplus

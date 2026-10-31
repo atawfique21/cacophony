@@ -1,5 +1,6 @@
 import CacophonyRouting
 import AVFoundation
+import CoreAudio
 import Darwin
 import Foundation
 import Synchronization
@@ -322,8 +323,43 @@ final class SystemAudioController: @unchecked Sendable {
         }
     }
 
-    /// Delay the renderer output holds, from the driver to the speakers.
-    private static let streamDelay = 0.5
+    /// AirPlay's own output path, beyond the delay the renderer output holds.
+    /// Measured at about 15 ms.
+    private static let airPlayOverhead = 0.015
+
+    /// Delay used when the installed driver reports no latency (older drivers).
+    private static let legacyDelay = 0.5
+
+    /// Below this the AirPlay engine underruns and rebuffers.
+    private static let minimumDelay = Double(CACOPHONY_MIN_LATENCY_FRAMES) / Double(CACOPHONY_SAMPLE_RATE)
+
+    /// Output latency the driver reports to players: device plus stream
+    /// latency, in seconds. Nil when the driver is missing or reports none.
+    private static func reportedLatency() -> Double? {
+        guard let device = DriverManager.device else { return nil }
+        let deviceFrames: UInt32 = (try? device.read(
+            kAudioDevicePropertyLatency,
+            scope: kAudioObjectPropertyScopeOutput,
+            initialValue: 0
+        )) ?? 0
+        var streamFrames: UInt32 = 0
+        if let streams: [AudioStreamID] = try? device.readArray(
+            kAudioDevicePropertyStreams,
+            scope: kAudioObjectPropertyScopeOutput
+        ), let stream = streams.first {
+            streamFrames = (try? stream.read(kAudioStreamPropertyLatency, initialValue: 0)) ?? 0
+        }
+        let frames = deviceFrames + streamFrames
+        guard frames > 0 else { return nil }
+        return Double(frames) / Double(CACOPHONY_SAMPLE_RATE)
+    }
+
+    /// The delay the renderer output holds so the speakers play audio exactly
+    /// the driver's reported latency after the driver received it.
+    private static func targetDelay() -> Double {
+        guard let reported = reportedLatency() else { return legacyDelay }
+        return max(minimumDelay, reported - airPlayOverhead)
+    }
 
     private func startOutput() {
         ring.reset()
@@ -331,7 +367,7 @@ final class SystemAudioController: @unchecked Sendable {
         expectedSampleTime = nil
         stateLock.unlock()
         do {
-            let output = RendererOutput(format: format, ring: ring, targetDelay: Self.streamDelay)
+            let output = RendererOutput(format: format, ring: ring, targetDelay: Self.targetDelay())
             try output.start()
             if CACRendererSetOutputContext(output.renderer, context) {
                 lastError = nil
